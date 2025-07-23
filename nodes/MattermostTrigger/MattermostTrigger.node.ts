@@ -48,20 +48,12 @@ export class MattermostTrigger implements INodeType {
 				placeholder: 'ws://your-server.com/api/v4/websocket',
 				required: true,
 			},
-			{
-				displayName: 'Channel ID',
-				name: 'channelId',
-				type: 'string',
-				default: '',
-				required: true,
-			},
 		],
 	};
 
 	async trigger(this: ITriggerFunctions): Promise<any> {
 		const credentials = await this.getCredentials('mattermostTriggerApi');
 		const token = credentials.accessToken;
-		const channelId = this.getNodeParameter('channelId', 0) as string;
 		const websocketUrl = this.getNodeParameter('websocketUrl', 0) as string;
 		const eventType = this.getNodeParameter('eventType', 0) as string;
 
@@ -83,9 +75,7 @@ export class MattermostTrigger implements INodeType {
 
 				if (eventType === 'posted') {
 					const post = JSON.parse(message.data.post);
-					if (post.channel_id === channelId) {
-						this.emit([this.helpers.returnJsonArray([post])]);
-					}
+					this.emit([this.helpers.returnJsonArray([post])]);
 				} else {
 					this.emit([this.helpers.returnJsonArray([message])]);
 				}

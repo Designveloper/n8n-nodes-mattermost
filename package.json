@@ -1,6 +1,6 @@
 {
 	"name": "@designveloper/n8n-nodes-mattermost-trigger",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"description": "An n8n custom trigger node for Mattermost WebSocket integration",
 	"keywords": [
 		"n8n-community-node-package"

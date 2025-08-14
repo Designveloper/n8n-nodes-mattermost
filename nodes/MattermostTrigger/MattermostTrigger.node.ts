@@ -53,7 +53,7 @@ export class MattermostTrigger implements INodeType {
 				required: true,
 			},
 			{
-				displayName: 'Channel Name',
+				displayName: 'Channel Names or IDs',
 				name: 'channelIds',
 				type: 'multiOptions',
 				typeOptions: {
@@ -62,7 +62,7 @@ export class MattermostTrigger implements INodeType {
 				default: [],
 				options: [],
 				description:
-					'Select one or more channel IDs. Choose from the list, or use an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+					'Choose from the list, or specify IDs using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 			},
 			{
 				displayName: 'Listen to Direct Messages',

@@ -1,6 +1,6 @@
 {
 	"name": "@designveloper/n8n-nodes-mattermost-trigger",
-	"version": "2.0.2",
+	"version": "2.1.2",
 	"description": "An n8n custom trigger node for Mattermost WebSocket integration",
 	"keywords": [
 		"n8n-community-node-package"
@@ -34,11 +34,13 @@
 		"n8nNodesApiVersion": 1,
 		"credentials": [
 			"dist/credentials/MattermostTriggerApi.credentials.js",
-			"dist/credentials/MattermostGetMessagesApi.credentials.js"
+			"dist/credentials/MattermostGetMessagesApi.credentials.js",
+			"dist/credentials/MattermostUploadBinaryDataApi.credentials.js"
 		],
 		"nodes": [
 			"dist/nodes/MattermostTrigger/MattermostTrigger.node.js",
-			"dist/nodes/MattermostGetMessages/MattermostGetMessages.node.js"
+			"dist/nodes/MattermostGetMessages/MattermostGetMessages.node.js",
+			"dist/nodes/MattermostUploadBinaryData/MattermostUploadBinaryData.node.js"
 		]
 	},
 	"devDependencies": {

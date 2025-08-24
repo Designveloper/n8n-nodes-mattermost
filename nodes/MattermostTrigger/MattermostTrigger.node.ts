@@ -7,7 +7,6 @@ import {
 	ILoadOptionsFunctions,
 	INodePropertyOptions,
 } from 'n8n-workflow';
-import WebSocket from 'ws';
 import { apiRequest } from './transport';
 import { Team } from './types';
 
@@ -126,56 +125,137 @@ export class MattermostTrigger implements INodeType {
 
 	async trigger(this: ITriggerFunctions): Promise<any> {
 		const credentials = await this.getCredentials('mattermostTriggerApi');
-		const token = credentials.accessToken;
-		const websocketUrl = this.getNodeParameter('websocketUrl', 0) as string;
+		const token = credentials.accessToken as string;
+		const websocketUrl = (this.getNodeParameter('websocketUrl', 0) as string) || '';
 		const eventType = this.getNodeParameter('eventType', 0) as string;
 		const includeDM = this.getNodeParameter('includeDM', 0) as boolean;
 		const includeGM = this.getNodeParameter('includeGM', 0) as boolean;
 		const channelIds = this.getNodeParameter('channelIds', 0) as string[];
 
-		const ws = new WebSocket(websocketUrl, {
-			headers: {
-				Authorization: `Bearer ${token}`,
-			},
-		});
+		const WebSocket = require('ws');
 
-		ws.on('open', () => {
-			console.log('WebSocket connection established');
-		});
+		let ws: InstanceType<typeof WebSocket> | null = null;
+		let pingInterval: NodeJS.Timeout | null = null;
+		let pongTimeout: NodeJS.Timeout | null = null;
+		let reconnectTimer: NodeJS.Timeout | null = null;
+		let backoff = 1000;
 
-		ws.on('message', (data: Buffer) => {
+		const clearTimers = () => {
+			if (pingInterval) clearInterval(pingInterval);
+			if (pongTimeout) clearTimeout(pongTimeout);
+			if (reconnectTimer) clearTimeout(reconnectTimer);
+			pingInterval = pongTimeout = reconnectTimer = null;
+		};
+
+		const startKeepAlive = () => {
+			pingInterval = setInterval(() => {
+				if (!ws || ws.readyState !== WebSocket.OPEN) return;
+				try {
+					ws.ping();
+					if (pongTimeout) clearTimeout(pongTimeout);
+					pongTimeout = setTimeout(() => {
+						try {
+							ws?.terminate();
+						} catch {}
+					}, 10000);
+				} catch (_) {}
+			}, 30000);
+		};
+
+		const authenticate = () => {
+			if (!ws || ws.readyState !== WebSocket.OPEN) return;
+			const challenge = {
+				seq: 1,
+				action: 'authentication_challenge',
+				data: { token },
+			};
 			try {
-				const message = JSON.parse(data.toString());
+				ws.send(JSON.stringify(challenge));
+			} catch {}
+		};
 
-				if (message.event !== eventType) return;
+		const reconnect = () => {
+			clearTimers();
+			if (reconnectTimer) clearTimeout(reconnectTimer);
+			reconnectTimer = setTimeout(connect, backoff);
+			backoff = Math.min(backoff * 2, 30000);
+		};
 
-				if (!includeDM && message.data.channel_type === 'D') return;
-				if (!includeGM && message.data.channel_type === 'G') return;
-				if (
-					!channelIds.includes(message?.broadcast?.channel_id) &&
-					['O', 'P'].includes(message.data.channel_type)
-				)
-					return;
+		const connect = () => {
+			clearTimers();
+			try {
+				ws = new WebSocket(websocketUrl, {
+					headers: { Authorization: `Bearer ${token}` },
+				});
 
-				if (eventType === 'posted') {
-					const post = JSON.parse(message.data.post);
-					this.emit([this.helpers.returnJsonArray([post])]);
-				} else {
-					this.emit([this.helpers.returnJsonArray([message])]);
-				}
-			} catch (err) {
-				console.error('Error parsing message', err);
+				ws.on('open', () => {
+					backoff = 1000;
+					authenticate();
+					startKeepAlive();
+				});
+
+				ws.on('pong', () => {
+					console.log('pong!');
+					if (pongTimeout) clearTimeout(pongTimeout);
+				});
+
+				ws.on('message', (data: Buffer) => {
+					try {
+						const msg = JSON.parse(data.toString());
+
+						if (msg.event === 'hello') return;
+
+						if (msg.event === 'ping') {
+							try {
+								ws?.send(JSON.stringify({ seq: msg.seq || 0, action: 'pong' }));
+							} catch {}
+							return;
+						}
+
+						if (eventType && msg.event !== eventType) return;
+
+						const chType = msg?.data?.channel_type as 'D' | 'G' | 'O' | 'P' | undefined;
+						if (!includeDM && chType === 'D') return;
+						if (!includeGM && chType === 'G') return;
+
+						const bcastCh = msg?.broadcast?.channel_id;
+						if (
+							['O', 'P'].includes(chType || '') &&
+							Array.isArray(channelIds) &&
+							channelIds.length
+						) {
+							if (!bcastCh || !channelIds.includes(bcastCh)) return;
+						}
+
+						if (eventType === 'posted') {
+							const post = JSON.parse(msg.data.post);
+							this.emit([this.helpers.returnJsonArray([post])]);
+						} else {
+							this.emit([this.helpers.returnJsonArray([msg])]);
+						}
+					} catch (err) {}
+				});
+
+				ws.on('error', (_err: any) => {
+					console.error('WS error', _err);
+				});
+
+				ws.on('close', (_code: number, _reason: Buffer) => {
+					reconnect();
+				});
+			} catch (_e) {
+				reconnect();
 			}
-		});
+		};
 
-		ws.on('error', (err) => {
-			console.error('WebSocket error:', err);
-			throw new NodeOperationError(this.getNode(), 'Something went wrong');
-		});
+		connect();
 
 		return {
 			closeFunction: () => {
-				ws.close();
+				try {
+					ws?.close();
+				} catch {}
+				clearTimers();
 			},
 		};
 	}

@@ -138,7 +138,6 @@ export class MattermostTrigger implements INodeType {
 		let pingInterval: NodeJS.Timeout | null = null;
 		let pongTimeout: NodeJS.Timeout | null = null;
 		let reconnectTimer: NodeJS.Timeout | null = null;
-		let backoff = 1000;
 
 		const clearTimers = () => {
 			if (pingInterval) clearInterval(pingInterval);
@@ -171,14 +170,7 @@ export class MattermostTrigger implements INodeType {
 			};
 			try {
 				ws.send(JSON.stringify(challenge));
-			} catch {}
-		};
-
-		const reconnect = () => {
-			clearTimers();
-			if (reconnectTimer) clearTimeout(reconnectTimer);
-			reconnectTimer = setTimeout(connect, backoff);
-			backoff = Math.min(backoff * 2, 30000);
+			} catch { }
 		};
 
 		const connect = () => {
@@ -189,7 +181,7 @@ export class MattermostTrigger implements INodeType {
 				});
 
 				ws.on('open', () => {
-					backoff = 1000;
+					console.log('[MM] WS open');
 					authenticate();
 					startKeepAlive();
 				});
@@ -207,8 +199,9 @@ export class MattermostTrigger implements INodeType {
 
 						if (msg.event === 'ping') {
 							try {
+								console.log('ping!');
 								ws?.send(JSON.stringify({ seq: msg.seq || 0, action: 'pong' }));
-							} catch {}
+							} catch { }
 							return;
 						}
 
@@ -233,18 +226,14 @@ export class MattermostTrigger implements INodeType {
 						} else {
 							this.emit([this.helpers.returnJsonArray([msg])]);
 						}
-					} catch (err) {}
+					} catch (err) { }
 				});
 
 				ws.on('error', (_err: any) => {
 					console.error('WS error', _err);
 				});
-
-				ws.on('close', (_code: number, _reason: Buffer) => {
-					reconnect();
-				});
 			} catch (_e) {
-				reconnect();
+				console.error('WS error', _e);
 			}
 		};
 
@@ -253,6 +242,8 @@ export class MattermostTrigger implements INodeType {
 		return {
 			closeFunction: () => {
 				try {
+					console.log('[MM] WS close');
+					ws?.removeAllListeners?.();
 					ws?.close();
 				} catch {}
 				clearTimers();

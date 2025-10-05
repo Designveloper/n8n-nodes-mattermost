@@ -154,6 +154,7 @@ export class MattermostTrigger implements INodeType {
 					if (pongTimeout) clearTimeout(pongTimeout);
 					pongTimeout = setTimeout(() => {
 						try {
+							console.log("MattermostTrigger: terminated!")
 							ws?.terminate();
 						} catch {}
 					}, 10000);
@@ -181,13 +182,13 @@ export class MattermostTrigger implements INodeType {
 				});
 
 				ws.on('open', () => {
-					console.log('[MM] WS open');
+					console.log('MattermostTrigger: [MM] WS open');
 					authenticate();
 					startKeepAlive();
 				});
 
 				ws.on('pong', () => {
-					console.log('pong!');
+					console.log('MattermostTrigger: pong!');
 					if (pongTimeout) clearTimeout(pongTimeout);
 				});
 
@@ -199,7 +200,7 @@ export class MattermostTrigger implements INodeType {
 
 						if (msg.event === 'ping') {
 							try {
-								console.log('ping!');
+								console.log('MattermostTrigger: ping!');
 								ws?.send(JSON.stringify({ seq: msg.seq || 0, action: 'pong' }));
 							} catch { }
 							return;
@@ -230,10 +231,10 @@ export class MattermostTrigger implements INodeType {
 				});
 
 				ws.on('error', (_err: any) => {
-					console.error('WS error', _err);
+					console.error('MattermostTrigger: WS error', _err);
 				});
 			} catch (_e) {
-				console.error('WS error', _e);
+				console.error('MattermostTrigger: WS error', _e);
 			}
 		};
 
@@ -242,7 +243,7 @@ export class MattermostTrigger implements INodeType {
 		return {
 			closeFunction: () => {
 				try {
-					console.log('[MM] WS close');
+					console.log('MattermostTrigger: [MM] WS close');
 					ws?.removeAllListeners?.();
 					ws?.close();
 				} catch {}

@@ -135,9 +135,18 @@ export class MattermostTrigger implements INodeType {
 		const WebSocket = require('ws');
 
 		let ws: InstanceType<typeof WebSocket> | null = null;
+
+		// timers
 		let pingInterval: NodeJS.Timeout | null = null;
 		let pongTimeout: NodeJS.Timeout | null = null;
 		let reconnectTimer: NodeJS.Timeout | null = null;
+
+		// reconnection state
+		let reconnectAttempts = 0;
+		const BASE_DELAY = 1000;           // 1s
+		const MAX_DELAY = 30_000;          // 30s
+		let stopping = false;              // set to true in closeFunction to prevent further reconnects
+		let connecting = false;            // prevent parallel connects
 
 		const clearTimers = () => {
 			if (pingInterval) clearInterval(pingInterval);
@@ -147,19 +156,22 @@ export class MattermostTrigger implements INodeType {
 		};
 
 		const startKeepAlive = () => {
+			// Send ws.ping() every 30s and require a pong within 10s
 			pingInterval = setInterval(() => {
 				if (!ws || ws.readyState !== WebSocket.OPEN) return;
 				try {
 					ws.ping();
+					console.log("MattermostTrigger: ping...")
 					if (pongTimeout) clearTimeout(pongTimeout);
 					pongTimeout = setTimeout(() => {
+						// No pong in 10s => terminate to trigger 'close' and reconnection
 						try {
-							console.log("MattermostTrigger: terminated!")
+							console.log('MattermostTrigger: heartbeat missed, terminating socket');
 							ws?.terminate();
-						} catch {}
-					}, 10000);
-				} catch (_) {}
-			}, 30000);
+						} catch { }
+					}, 10_000);
+				} catch { }
+			}, 30_000);
 		};
 
 		const authenticate = () => {
@@ -174,21 +186,70 @@ export class MattermostTrigger implements INodeType {
 			} catch { }
 		};
 
-		const connect = () => {
+		const scheduleReconnect = (reason: string) => {
+			if (stopping) return;
+			if (reconnectTimer) return; // already scheduled
+
+			reconnectAttempts += 1;
+			// exponential backoff with jitter
+			const exp = Math.min(reconnectAttempts, 8); // cap exponent growth
+			const delay = Math.min(MAX_DELAY, BASE_DELAY * Math.pow(2, exp));
+			const jitter = Math.floor(Math.random() * 500); // up to 0.5s jitter
+			const waitMs = delay + jitter;
+
+			console.log(`MattermostTrigger: reconnect in ${waitMs}ms (attempt ${reconnectAttempts}) due to: ${reason}`);
+			reconnectTimer = setTimeout(() => {
+				reconnectTimer = null;
+				connect();
+			}, waitMs);
+		};
+
+		const teardownSocket = () => {
+			try {
+				ws?.removeAllListeners?.();
+				if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+					try { ws.close(); } catch { }
+					try { ws.terminate(); } catch { }
+				}
+			} catch { }
+			ws = null;
 			clearTimers();
+			connecting = false;
+		};
+
+		const connect = () => {
+			if (stopping) return;
+			if (connecting) return;
+			connecting = true;
+
+			teardownSocket(); // ensure clean state before opening new one (also clears timers)
+
 			try {
 				ws = new WebSocket(websocketUrl, {
 					headers: { Authorization: `Bearer ${token}` },
 				});
 
 				ws.on('open', () => {
-					console.log('MattermostTrigger: [MM] WS open');
+					console.log('MattermostTrigger: WS open');
+					reconnectAttempts = 0;      // reset backoff on successful open
+					connecting = false;
 					authenticate();
 					startKeepAlive();
 				});
 
+				ws.on('upgrade', () => {
+					// Some environments emit 'upgrade' before 'open'
+					// nothing to do, but useful to know socket is in progress
+				});
+
+				ws.on('unexpectedResponse', (_req: any, res: any) => {
+					console.error('MattermostTrigger: unexpectedResponse', res?.statusCode);
+					connecting = false;
+					scheduleReconnect('unexpectedResponse');
+				});
+
 				ws.on('pong', () => {
-					console.log('MattermostTrigger: pong!');
+					console.log("MattermostTrigger: pong...")
 					if (pongTimeout) clearTimeout(pongTimeout);
 				});
 
@@ -200,55 +261,70 @@ export class MattermostTrigger implements INodeType {
 
 						if (msg.event === 'ping') {
 							try {
-								console.log('MattermostTrigger: ping!');
 								ws?.send(JSON.stringify({ seq: msg.seq || 0, action: 'pong' }));
 							} catch { }
 							return;
 						}
 
+						// Filter by event type
 						if (eventType && msg.event !== eventType) return;
 
+						// Channel filtering
 						const chType = msg?.data?.channel_type as 'D' | 'G' | 'O' | 'P' | undefined;
 						if (!includeDM && chType === 'D') return;
 						if (!includeGM && chType === 'G') return;
 
 						const bcastCh = msg?.broadcast?.channel_id;
-						if (
-							['O', 'P'].includes(chType || '') &&
-							Array.isArray(channelIds) &&
-							channelIds.length
-						) {
+						if (['O', 'P'].includes(chType || '') && Array.isArray(channelIds) && channelIds.length) {
 							if (!bcastCh || !channelIds.includes(bcastCh)) return;
 						}
 
+						// Emit payload
 						if (eventType === 'posted') {
 							const post = JSON.parse(msg.data.post);
 							this.emit([this.helpers.returnJsonArray([post])]);
 						} else {
 							this.emit([this.helpers.returnJsonArray([msg])]);
 						}
-					} catch (err) { }
+					} catch { }
 				});
 
-				ws.on('error', (_err: any) => {
-					console.error('MattermostTrigger: WS error', _err);
+				ws.on('error', (err: any) => {
+					console.error('MattermostTrigger: WS error', err?.message || err);
+					// error alone may not close the socket; let 'close' handle reconnection,
+					// but in some cases 'error' is terminal without 'close', so schedule reconnect too.
+					scheduleReconnect('error');
 				});
-			} catch (_e) {
-				console.error('MattermostTrigger: WS error', _e);
+
+				ws.on('close', (code: number, reasonBuf: Buffer) => {
+					const reason = reasonBuf?.toString?.() || '';
+					console.warn(`MattermostTrigger: WS closed (code=${code}) ${reason}`);
+					connecting = false;
+					teardownSocket();
+					scheduleReconnect(`close code=${code}`);
+				});
+			} catch (e: any) {
+				connecting = false;
+				console.error('MattermostTrigger: connect() threw', e?.message || e);
+				teardownSocket();
+				scheduleReconnect('connect exception');
 			}
 		};
 
+		// initial connect
 		connect();
 
 		return {
 			closeFunction: () => {
 				try {
-					console.log('MattermostTrigger: [MM] WS close');
-					ws?.removeAllListeners?.();
-					ws?.close();
-				} catch {}
-				clearTimers();
+					console.log('MattermostTrigger: shutting down');
+					stopping = true;         // prevents any further reconnects
+					if (reconnectTimer) clearTimeout(reconnectTimer);
+					reconnectTimer = null;
+					teardownSocket();
+				} catch { }
 			},
 		};
 	}
+
 }

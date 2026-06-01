@@ -42,21 +42,21 @@ export class MattermostUploadBinaryData implements INodeType {
 				name: 'binaryPropertyName',
 				type: 'string',
 				default: 'data',
-				description: 'The name of the binary property containing the JSON content',
+				description: 'Name of the binary property containing the file to upload',
 			},
 		],
 	};
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
-		const channelId = this.getNodeParameter('channelId', 0) as string;
-		const message = this.getNodeParameter('message', 0) as string;
-		const binaryPropertyName = this.getNodeParameter('binaryPropertyName', 0) as string;
 
 		const returnData: INodeExecutionData[] = [];
 
 		for (let i = 0; i < items.length; i++) {
 			const item = items[i];
+			const channelId = this.getNodeParameter('channelId', i) as string;
+			const message = this.getNodeParameter('message', i) as string;
+			const binaryPropertyName = this.getNodeParameter('binaryPropertyName', i) as string;
 
 			if (!item.binary || !item.binary[binaryPropertyName]) {
 				throw new NodeOperationError(
@@ -65,12 +65,15 @@ export class MattermostUploadBinaryData implements INodeType {
 				);
 			}
 
-			const binaryData = item.binary[binaryPropertyName].data;
-			const buffer = Buffer.from(binaryData, 'base64');
-			const fileName = item.binary[binaryPropertyName].fileName;
+			const binaryData = item.binary[binaryPropertyName];
+			const buffer = await this.helpers.getBinaryDataBuffer(i, binaryPropertyName);
+			const fileName = binaryData.fileName ?? binaryPropertyName;
 
 			const form = new FormData();
-			form.append('files', buffer, { filename: fileName });
+			form.append('files', buffer, {
+				filename: fileName,
+				contentType: binaryData.mimeType,
+			});
 			form.append('channel_id', channelId);
 
 			try {
@@ -83,7 +86,11 @@ export class MattermostUploadBinaryData implements INodeType {
 					{ ...form.getHeaders() },
 				);
 
-				const fileId = uploadResp.file_infos[0].id;
+				const fileId = uploadResp.file_infos?.[0]?.id;
+
+				if (!fileId) {
+					throw new NodeOperationError(this.getNode(), 'Mattermost did not return a file ID');
+				}
 
 				const postResp = await apiRequest.call(
 					this,
@@ -91,7 +98,7 @@ export class MattermostUploadBinaryData implements INodeType {
 					`posts`,
 					{
 						channel_id: channelId,
-						message: message || `File uploaded`,
+						message: message || 'File uploaded',
 						file_ids: [fileId],
 					},
 					{},

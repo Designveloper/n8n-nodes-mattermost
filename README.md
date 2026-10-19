@@ -72,11 +72,35 @@ npm run lint
 
 Node.js 20.15 or newer is required.
 
-## Publish checklist
+## Release
 
-1. Confirm `package.json` has the intended package version.
-2. Run `npm test`, `npm run lint`, and `npm run build`.
-3. Inspect `npm pack` output; only the `dist` directory and package metadata should be included.
-4. Authenticate with an npm account that can publish `@designveloper`.
-5. Publish with `npm publish --access public`.
-6. Tag the release and update the n8n deployment to the new version.
+The [release workflow](.github/workflows/release.yml) checks the package and stages
+it with `npm stage publish --access public --tag latest`. **One npm approval
+publishes the version and updates `latest` together.** Staging alone does not
+make the package public or change `latest`.
+
+Configure the repository's `NPM_TOKEN` Actions secret with an npm token that can
+stage this package. Keep npm's human approval requirement enabled.
+
+1. Update `package.json` and `package-lock.json` to a new stable version and merge
+   the changes into `main`.
+2. Push a matching Git tag, for example `v2.3.6`, or run **Check and stage npm
+   release** manually on `main`. Both methods run tests, lint, build, and pack
+   before staging the tested tarball. PRs and ordinary pushes to `main` only run
+   checks.
+3. Approve the stage ID shown in the workflow log through npm. The staged tag is
+   immutable, so it must already be `latest`; no separate `npm dist-tag add` is
+   needed after approval.
+4. Verify the public release:
+
+   ```bash
+   npm view @designveloper/n8n-nodes-mattermost-trigger version
+   npm dist-tag ls @designveloper/n8n-nodes-mattermost-trigger
+   ```
+
+5. Update the n8n deployment to the verified version and restart n8n.
+
+The workflow rejects published versions, prereleases, mismatched Git tags, and
+versions that would move `latest` backward. If a version is already staged,
+approve that existing stage rather than rerunning the workflow. Reject an
+incorrect stage in npm before staging the same version again.
